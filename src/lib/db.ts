@@ -36,3 +36,17 @@ export async function db<T = Record<string, unknown>>(
   const rows = await sql.query(query, params);
   return rows as T[];
 }
+
+/**
+ * Extract the client IP address from incoming request headers for security audit logging.
+ */
+export function getClientIp(request?: Request): string | null {
+  if (!request) return null;
+  const forwardedFor = request.headers.get('x-forwarded-for');
+  if (forwardedFor) {
+    const firstIp = forwardedFor.split(',')[0]?.trim();
+    if (firstIp) return firstIp;
+  }
+  const realIp = request.headers.get('x-real-ip')?.trim();
+  return realIp || null;
+}

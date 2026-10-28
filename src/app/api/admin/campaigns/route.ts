@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { revalidatePath } from 'next/cache';
 import { auth } from '@/lib/auth';
-import { db } from '@/lib/db';
+import { db, getClientIp } from '@/lib/db';
+import { isSafeMediaSrc } from '@/lib/gallery-server';
 
 function slugify(input: string): string {
   return input
@@ -13,7 +14,7 @@ function slugify(input: string): string {
 /** GET /api/admin/campaigns */
 export async function GET() {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   const rows = await db('SELECT * FROM campaigns ORDER BY created_at DESC');
@@ -23,7 +24,7 @@ export async function GET() {
 /** POST /api/admin/campaigns — create a new fundraising campaign */
 export async function POST(request: Request) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -43,6 +44,12 @@ export async function POST(request: Request) {
 
     if (!title) {
       return NextResponse.json({ error: 'Campaign title is required' }, { status: 400 });
+    }
+    if (image_url && !isSafeMediaSrc(image_url)) {
+      return NextResponse.json(
+        { error: 'Invalid image URL. Use a relative /images/... path or https:// URL.' },
+        { status: 400 },
+      );
     }
 
     const rows = await db(
@@ -66,12 +73,13 @@ export async function POST(request: Request) {
     const campaign = rows[0];
 
     await db(
-      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details)
-       VALUES ($1, 'CREATE_CAMPAIGN', 'campaigns', $2, $3)`,
+      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip_address)
+       VALUES ($1, 'CREATE_CAMPAIGN', 'campaigns', $2, $3, $4)`,
       [
         Number(session.user.id) || null,
         campaign?.id ?? null,
         JSON.stringify({ title, slug, goal_amount, status }),
+        getClientIp(request),
       ],
     );
 
@@ -85,6 +93,7 @@ export async function POST(request: Request) {
     if (message.includes('unique') || message.includes('duplicate')) {
       return NextResponse.json({ error: 'A campaign with that slug already exists' }, { status: 409 });
     }
+    console.error('[POST /api/admin/campaigns] Error:', err);
     return NextResponse.json({ error: 'Failed to create campaign' }, { status: 500 });
   }
 }

@@ -1,36 +1,13 @@
 import { NextResponse } from 'next/server';
 import { revalidatePath } from 'next/cache';
-import { writeFile, mkdir } from 'node:fs/promises';
-import { join, extname } from 'node:path';
 import { auth } from '@/lib/auth';
-import { db } from '@/lib/db';
-import { ensureGalleryReady } from '@/lib/gallery-server';
-
-async function saveUploadedMedia(file: File): Promise<string> {
-  const bytes = await file.arrayBuffer();
-  const buffer = Buffer.from(bytes);
-
-  const ext = extname(file.name).toLowerCase() || (file.type.startsWith('video/') ? '.mp4' : '.jpg');
-  const safeBase = file.name
-    .replace(/\.[^/.]+$/, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '') || 'media';
-
-  const filename = `${safeBase}-${Date.now()}${ext}`;
-
-  try {
-    const uploadDir = join(process.cwd(), 'public', 'images', 'club');
-    await mkdir(uploadDir, { recursive: true });
-    const filePath = join(uploadDir, filename);
-    await writeFile(filePath, buffer);
-    return `/images/club/${filename}`;
-  } catch {
-    const mime = file.type || (ext === '.mp4' ? 'video/mp4' : 'image/jpeg');
-    return `data:${mime};base64,${buffer.toString('base64')}`;
-  }
-}
+import { db, getClientIp } from '@/lib/db';
+import {
+  ensureGalleryReady,
+  isSafeMediaSrc,
+  MediaValidationError,
+  saveUploadedMedia,
+} from '@/lib/gallery-server';
 
 /** GET /api/admin/gallery/[id] */
 export async function GET(
@@ -38,7 +15,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -57,7 +34,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -150,6 +127,12 @@ export async function PATCH(
     if (!src) {
       return NextResponse.json({ error: 'Media source cannot be empty' }, { status: 400 });
     }
+    if (!isSafeMediaSrc(src)) {
+      return NextResponse.json(
+        { error: 'Invalid media source URL. Use a relative /images/... path or https:// URL.' },
+        { status: 400 },
+      );
+    }
 
     const updated = await db(
       `UPDATE gallery_items
@@ -178,12 +161,13 @@ export async function PATCH(
     );
 
     await db(
-      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details)
-       VALUES ($1, 'UPDATE_GALLERY_ITEM', 'gallery_items', $2, $3)`,
+      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip_address)
+       VALUES ($1, 'UPDATE_GALLERY_ITEM', 'gallery_items', $2, $3, $4)`,
       [
         Number(session.user.id) || null,
         itemId,
         JSON.stringify({ media_type, title, src, is_published }),
+        getClientIp(request),
       ],
     );
 
@@ -194,18 +178,21 @@ export async function PATCH(
 
     return NextResponse.json({ success: true, item: updated[0] });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Failed to update gallery item';
-    return NextResponse.json({ error: message }, { status: 500 });
+    if (err instanceof MediaValidationError) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    console.error('[PATCH /api/admin/gallery/[id]] Error:', err);
+    return NextResponse.json({ error: 'Failed to update gallery item' }, { status: 500 });
   }
 }
 
 /** DELETE /api/admin/gallery/[id] — delete a gallery item */
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -227,12 +214,13 @@ export async function DELETE(
     }
 
     await db(
-      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details)
-       VALUES ($1, 'DELETE_GALLERY_ITEM', 'gallery_items', $2, $3)`,
+      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip_address)
+       VALUES ($1, 'DELETE_GALLERY_ITEM', 'gallery_items', $2, $3, $4)`,
       [
         Number(session.user.id) || null,
         itemId,
         JSON.stringify(deleted[0]),
+        getClientIp(request),
       ],
     );
 
@@ -243,7 +231,7 @@ export async function DELETE(
 
     return NextResponse.json({ success: true });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Failed to delete gallery item';
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error('[DELETE /api/admin/gallery/[id]] Error:', err);
+    return NextResponse.json({ error: 'Failed to delete gallery item' }, { status: 500 });
   }
 }

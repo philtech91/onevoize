@@ -14,7 +14,11 @@ import { fadeUp, staggerContainer, staggerItem, tapScale } from '@/lib/motion';
 export default function LoginPage() {
   const router = useRouter();
   const params = useSearchParams();
-  const callbackUrl = params.get('callbackUrl') || '/dashboard';
+  const rawCallbackUrl = params.get('callbackUrl') || '/dashboard';
+  const callbackUrl =
+    rawCallbackUrl.startsWith('/') && !rawCallbackUrl.startsWith('//') && !rawCallbackUrl.startsWith('/\\')
+      ? rawCallbackUrl
+      : '/dashboard';
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');

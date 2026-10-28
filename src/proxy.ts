@@ -13,7 +13,7 @@ export async function proxy(request: NextRequest) {
   // Protect all /dashboard routes
   if (pathname.startsWith('/dashboard')) {
     const session = await auth();
-    if (!session?.user) {
+    if (!session?.user?.id) {
       const loginUrl = new URL('/dashboard/login', request.url);
       loginUrl.searchParams.set('callbackUrl', pathname);
       return NextResponse.redirect(loginUrl);

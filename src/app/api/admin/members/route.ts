@@ -1,13 +1,14 @@
+import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { revalidatePath } from 'next/cache';
 import { auth } from '@/lib/auth';
-import { db } from '@/lib/db';
+import { db, getClientIp } from '@/lib/db';
 import { ensureMembersSchemaReady } from '@/lib/members-server';
 
 /** GET /api/admin/members */
 export async function GET() {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   await ensureMembersSchemaReady();
@@ -18,7 +19,7 @@ export async function GET() {
 /** POST /api/admin/members — create a new club member */
 export async function POST(request: Request) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   await ensureMembersSchemaReady();
@@ -46,8 +47,8 @@ export async function POST(request: Request) {
 
     if (!membership_no) {
       const year = new Date().getFullYear();
-      const rand = Math.floor(1000 + Math.random() * 9000);
-      membership_no = `OVC-${year}-${rand}`;
+      const token = crypto.randomBytes(4).toString('hex').toUpperCase();
+      membership_no = `OVC-${year}-${token}`;
     }
 
     const rows = await db(
@@ -71,12 +72,13 @@ export async function POST(request: Request) {
     const member = rows[0];
 
     await db(
-      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details)
-       VALUES ($1, 'CREATE_MEMBER', 'members', $2, $3)`,
+      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip_address)
+       VALUES ($1, 'CREATE_MEMBER', 'members', $2, $3, $4)`,
       [
         Number(session.user.id) || null,
         member?.id ?? null,
         JSON.stringify({ full_name, email, membership_no, status }),
+        getClientIp(request),
       ],
     );
 
@@ -92,6 +94,7 @@ export async function POST(request: Request) {
         { status: 409 },
       );
     }
+    console.error('[POST /api/admin/members] Error:', err);
     return NextResponse.json({ error: 'Failed to create member' }, { status: 500 });
   }
 }

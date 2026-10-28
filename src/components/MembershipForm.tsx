@@ -181,10 +181,16 @@ export function MembershipForm() {
 
     setSubmitting(true)
     try {
+      const payload = {
+        ...values,
+        ...(isEditingExisting && submittedApp?.membership_no
+          ? { membership_no: submittedApp.membership_no }
+          : {}),
+      }
       const res = await fetch('/api/membership', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(values),
+        body: JSON.stringify(payload),
       })
       const data = await res.json()
 

@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { revalidatePath } from 'next/cache';
 import { auth } from '@/lib/auth';
-import { db } from '@/lib/db';
+import { db, getClientIp } from '@/lib/db';
+import { isSafeMediaSrc } from '@/lib/gallery-server';
 
 /** GET /api/admin/events/[id] */
 export async function GET(
@@ -9,7 +10,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -27,7 +28,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -61,6 +62,12 @@ export async function PATCH(
     if (!title) {
       return NextResponse.json({ error: 'Title cannot be empty' }, { status: 400 });
     }
+    if (image_url && !isSafeMediaSrc(String(image_url))) {
+      return NextResponse.json(
+        { error: 'Invalid image URL. Use a relative /images/... path or https:// URL.' },
+        { status: 400 },
+      );
+    }
 
     const updated = await db(
       `UPDATE events
@@ -79,12 +86,13 @@ export async function PATCH(
     );
 
     await db(
-      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details)
-       VALUES ($1, 'UPDATE_EVENT', 'events', $2, $3)`,
+      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip_address)
+       VALUES ($1, 'UPDATE_EVENT', 'events', $2, $3, $4)`,
       [
         Number(session.user.id) || null,
         eventId,
         JSON.stringify({ title, status, event_date }),
+        getClientIp(request),
       ],
     );
 
@@ -95,18 +103,18 @@ export async function PATCH(
 
     return NextResponse.json({ success: true, event: updated[0] });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Failed to update event';
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error('[PATCH /api/admin/events/[id]] Error:', err);
+    return NextResponse.json({ error: 'Failed to update event' }, { status: 500 });
   }
 }
 
 /** DELETE /api/admin/events/[id] */
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -118,9 +126,9 @@ export async function DELETE(
   }
 
   await db(
-    `INSERT INTO audit_logs (user_id, action, entity, entity_id, details)
-     VALUES ($1, 'DELETE_EVENT', 'events', $2, $3)`,
-    [Number(session.user.id) || null, eventId, JSON.stringify(deleted[0])],
+    `INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip_address)
+     VALUES ($1, 'DELETE_EVENT', 'events', $2, $3, $4)`,
+    [Number(session.user.id) || null, eventId, JSON.stringify(deleted[0]), getClientIp(request)],
   );
 
   revalidatePath('/events');

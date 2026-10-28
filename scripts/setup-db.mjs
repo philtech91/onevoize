@@ -77,29 +77,36 @@ try {
 console.log('✅  Schema initialized successfully!');
 
 // ─── 2. Seed Superadmin ───────────────────────────────────────────────────────
-const NAME = 'Demo La Blaze';
-const EMAIL = 'demolablaze@gmail.com';
-const PASSWORD = '$Omerta93';
+const NAME = (process.env.SUPERADMIN_NAME || 'Super Admin').trim();
+const EMAIL = (process.env.SUPERADMIN_EMAIL || '').trim().toLowerCase();
+const PASSWORD = process.env.SUPERADMIN_PASSWORD || '';
 const ROLE = 'superadmin';
 
-console.log(`\n🌱  Seeding superadmin: ${EMAIL} …`);
-const hash = await bcrypt.hash(PASSWORD, 12);
+if (EMAIL && PASSWORD) {
+  if (PASSWORD.length < 8) {
+    console.error('❌  SUPERADMIN_PASSWORD must be at least 8 characters long.');
+    process.exit(1);
+  }
+  console.log(`\n🌱  Seeding superadmin: ${EMAIL} …`);
+  const hash = await bcrypt.hash(PASSWORD, 12);
 
-await sql.query(
-  `INSERT INTO users (name, email, password, role, is_active)
-   VALUES ($1, $2, $3, $4, TRUE)
-   ON CONFLICT (email) DO UPDATE
-     SET password  = EXCLUDED.password,
-         role      = EXCLUDED.role,
-         is_active = TRUE,
-         updated_at = NOW()`,
-  [NAME, EMAIL, hash, ROLE],
-);
+  await sql.query(
+    `INSERT INTO users (name, email, password, role, is_active)
+     VALUES ($1, $2, $3, $4, TRUE)
+     ON CONFLICT (email) DO UPDATE
+       SET password  = EXCLUDED.password,
+           role      = EXCLUDED.role,
+           is_active = TRUE,
+           updated_at = NOW()`,
+    [NAME, EMAIL, hash, ROLE],
+  );
 
-console.log('✅  Superadmin created/updated successfully!');
-console.log(`   Email    : ${EMAIL}`);
-console.log(`   Password : ${PASSWORD}`);
-console.log(`   Role     : ${ROLE}`);
+  console.log('✅  Superadmin created/updated successfully!');
+  console.log(`   Email    : ${EMAIL}`);
+  console.log(`   Role     : ${ROLE}`);
+} else {
+  console.log('\nℹ️  Skipping superadmin seed (set SUPERADMIN_EMAIL and SUPERADMIN_PASSWORD in .env.local to seed).');
+}
 
 // ─── 3. Seed Initial Campaigns & Events if empty ─────────────────────────────
 try {

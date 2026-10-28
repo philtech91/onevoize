@@ -1,28 +1,39 @@
+import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { revalidatePath } from 'next/cache';
-import { db } from '@/lib/db';
+import { db, getClientIp } from '@/lib/db';
 import { ensureMembersSchemaReady } from '@/lib/members-server';
 
+function generateMembershipNo(): string {
+  const year = new Date().getFullYear();
+  const token = crypto.randomBytes(4).toString('hex').toUpperCase();
+  return `OVC-${year}-${token}`;
+}
+
 /**
- * GET /api/membership?ref=OVC-2026-XXXX&email=user@example.com
- * Looks up an existing membership application status by reference number or email.
+ * GET /api/membership?ref=OVC-2026-XXXXXXXX&email=user@example.com
+ * Looks up an existing membership application status when BOTH reference number AND email match.
+ * Returns only non-PII status metadata.
  */
 export async function GET(request: Request) {
   await ensureMembersSchemaReady();
   const { searchParams } = new URL(request.url);
   const ref = searchParams.get('ref')?.trim() || '';
-  const email = searchParams.get('email')?.trim() || '';
+  const email = searchParams.get('email')?.trim().toLowerCase() || '';
 
-  if (!ref && !email) {
-    return NextResponse.json({ error: 'Reference or email is required' }, { status: 400 });
+  if (!ref || !email) {
+    return NextResponse.json(
+      { error: 'Both application reference and email are required' },
+      { status: 400 },
+    );
   }
 
   try {
     const rows = await db(
-      `SELECT id, full_name, email, phone, address, occupation, application_reason, membership_no, status, joined_at, created_at, updated_at
+      `SELECT membership_no, status, joined_at, created_at, updated_at
        FROM members
-       WHERE ($1 <> '' AND membership_no = $1)
-          OR ($2 <> '' AND LOWER(email) = LOWER($2))
+       WHERE UPPER(membership_no) = UPPER($1)
+         AND LOWER(email) = LOWER($2)
        ORDER BY id DESC
        LIMIT 1`,
       [ref, email],
@@ -55,6 +66,7 @@ export async function POST(request: Request) {
     const address = String(body.address || '').trim();
     const occupation = String(body.occupation || '').trim();
     const reason = String(body.reason || body.application_reason || '').trim();
+    const providedRef = String(body.membership_no || '').trim();
 
     if (full_name.length < 2) {
       return NextResponse.json({ error: 'Please enter your full name (at least 2 characters).' }, { status: 400 });
@@ -88,7 +100,12 @@ export async function POST(request: Request) {
 
     if (existingRows[0]) {
       const existing = existingRows[0];
-      if (existing.status === 'pending') {
+      // Only allow updating a pending application if the caller proves possession of the matching reference number
+      if (
+        existing.status === 'pending' &&
+        providedRef &&
+        String(existing.membership_no || '').toUpperCase() === providedRef.toUpperCase()
+      ) {
         const updatedRows = await db(
           `UPDATE members
            SET full_name = $1,
@@ -113,29 +130,16 @@ export async function POST(request: Request) {
         });
       }
 
-      return NextResponse.json({
-        success: true,
-        alreadyRegistered: true,
-        application: {
-          id: existing.id,
-          full_name: existing.full_name,
-          email: existing.email,
-          phone: existing.phone,
-          address: existing.address,
-          occupation: existing.occupation || occupation,
-          application_reason: existing.application_reason || reason,
-          membership_no: existing.membership_no,
-          status: existing.status,
-          joined_at: existing.joined_at,
-          created_at: existing.created_at,
-          updated_at: existing.updated_at,
+      return NextResponse.json(
+        {
+          error:
+            'An application or membership with this email address is already on file. Please contact the secretariat if you need to update your details.',
         },
-      });
+        { status: 409 },
+      );
     }
 
-    const year = new Date().getFullYear();
-    const rand = Math.floor(1000 + Math.random() * 9000);
-    const membership_no = `OVC-${year}-${rand}`;
+    const membership_no = generateMembershipNo();
 
     const insertedRows = await db(
       `INSERT INTO members (
@@ -158,8 +162,8 @@ export async function POST(request: Request) {
 
     try {
       await db(
-        `INSERT INTO audit_logs (user_id, action, entity, entity_id, details)
-         VALUES (NULL, 'SUBMIT_MEMBERSHIP_APPLICATION', 'members', $1, $2)`,
+        `INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip_address)
+         VALUES (NULL, 'SUBMIT_MEMBERSHIP_APPLICATION', 'members', $1, $2, $3)`,
         [
           application?.id ?? null,
           JSON.stringify({
@@ -170,6 +174,7 @@ export async function POST(request: Request) {
             membership_no,
             status: 'pending',
           }),
+          getClientIp(request),
         ],
       );
     } catch {

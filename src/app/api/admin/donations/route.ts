@@ -1,12 +1,13 @@
+import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { revalidatePath } from 'next/cache';
 import { auth } from '@/lib/auth';
-import { db } from '@/lib/db';
+import { db, getClientIp } from '@/lib/db';
 
 /** POST /api/admin/donations — record a manual or bank transfer donation */
 export async function POST(request: Request) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -21,9 +22,9 @@ export async function POST(request: Request) {
     const message = body.message ? String(body.message).trim() : null;
     const reference = body.reference
       ? String(body.reference).trim()
-      : `OVC-MANUAL-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`;
+      : `OVC-MANUAL-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 
-    if (!donor_name || !donor_email || !amount || amount <= 0) {
+    if (!donor_name || !donor_email || !Number.isFinite(amount) || amount <= 0) {
       return NextResponse.json(
         { error: 'Donor name, email, and a positive amount are required' },
         { status: 400 },
@@ -52,22 +53,24 @@ export async function POST(request: Request) {
     }
 
     await db(
-      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details)
-       VALUES ($1, 'RECORD_DONATION', 'donations', $2, $3)`,
+      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip_address)
+       VALUES ($1, 'RECORD_DONATION', 'donations', $2, $3, $4)`,
       [
         Number(session.user.id) || null,
         donation?.id ?? null,
         JSON.stringify({ reference, donor_name, amount, status, campaign }),
+        getClientIp(request),
       ],
     );
 
     revalidatePath('/dashboard/donations');
     revalidatePath('/dashboard/campaigns');
+    revalidatePath('/campaigns');
     revalidatePath('/dashboard');
 
     return NextResponse.json({ success: true, donation });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Failed to record donation';
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error('[POST /api/admin/donations] Error:', err);
+    return NextResponse.json({ error: 'Failed to record donation' }, { status: 500 });
   }
 }

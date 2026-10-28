@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server';
 import { revalidatePath } from 'next/cache';
 import { auth } from '@/lib/auth';
-import { db } from '@/lib/db';
+import { db, getClientIp } from '@/lib/db';
+import { isSafeMediaSrc } from '@/lib/gallery-server';
 
 /** GET /api/admin/events */
 export async function GET() {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   const rows = await db('SELECT * FROM events ORDER BY event_date DESC');
@@ -16,7 +17,7 @@ export async function GET() {
 /** POST /api/admin/events — create a new event */
 export async function POST(request: Request) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -35,6 +36,12 @@ export async function POST(request: Request) {
 
     if (!title || !event_date) {
       return NextResponse.json({ error: 'Title and event date are required' }, { status: 400 });
+    }
+    if (image_url && !isSafeMediaSrc(image_url)) {
+      return NextResponse.json(
+        { error: 'Invalid image URL. Use a relative /images/... path or https:// URL.' },
+        { status: 400 },
+      );
     }
 
     const rows = await db(
@@ -57,12 +64,13 @@ export async function POST(request: Request) {
     const event = rows[0];
 
     await db(
-      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details)
-       VALUES ($1, 'CREATE_EVENT', 'events', $2, $3)`,
+      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip_address)
+       VALUES ($1, 'CREATE_EVENT', 'events', $2, $3, $4)`,
       [
         Number(session.user.id) || null,
         event?.id ?? null,
         JSON.stringify({ title, event_date, status }),
+        getClientIp(request),
       ],
     );
 
@@ -72,7 +80,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ success: true, event });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Failed to create event';
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error('[POST /api/admin/events] Error:', err);
+    return NextResponse.json({ error: 'Failed to create event' }, { status: 500 });
   }
 }

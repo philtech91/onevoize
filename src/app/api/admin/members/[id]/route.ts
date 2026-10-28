@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { revalidatePath } from 'next/cache';
 import { auth } from '@/lib/auth';
-import { db } from '@/lib/db';
+import { db, getClientIp } from '@/lib/db';
 import { ensureMembersSchemaReady } from '@/lib/members-server';
 
 /** GET /api/admin/members/[id] */
@@ -10,7 +10,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   await ensureMembersSchemaReady();
@@ -29,7 +29,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   await ensureMembersSchemaReady();
@@ -121,12 +121,13 @@ export async function PATCH(
     );
 
     await db(
-      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details)
-       VALUES ($1, 'UPDATE_MEMBER', 'members', $2, $3)`,
+      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip_address)
+       VALUES ($1, 'UPDATE_MEMBER', 'members', $2, $3, $4)`,
       [
         Number(session.user.id) || null,
         memberId,
         JSON.stringify({ full_name, status, membership_no }),
+        getClientIp(request),
       ],
     );
 
@@ -143,17 +144,18 @@ export async function PATCH(
         { status: 409 },
       );
     }
+    console.error('[PATCH /api/admin/members/[id]] Error:', err);
     return NextResponse.json({ error: 'Failed to update member' }, { status: 500 });
   }
 }
 
 /** DELETE /api/admin/members/[id] */
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   await ensureMembersSchemaReady();
@@ -168,9 +170,9 @@ export async function DELETE(
   }
 
   await db(
-    `INSERT INTO audit_logs (user_id, action, entity, entity_id, details)
-     VALUES ($1, 'DELETE_MEMBER', 'members', $2, $3)`,
-    [Number(session.user.id) || null, memberId, JSON.stringify(deleted[0])],
+    `INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip_address)
+     VALUES ($1, 'DELETE_MEMBER', 'members', $2, $3, $4)`,
+    [Number(session.user.id) || null, memberId, JSON.stringify(deleted[0]), getClientIp(request)],
   );
 
   revalidatePath('/dashboard/members');

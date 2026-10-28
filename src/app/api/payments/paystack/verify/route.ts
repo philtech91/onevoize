@@ -12,8 +12,18 @@ async function handleVerify(reference: string) {
 
   return NextResponse.json({
     success: transaction.status === 'success',
-    transaction,
-    donation,
+    donation: donation
+      ? {
+          reference: donation.reference,
+          donor_name: donation.donor_name,
+          amount: donation.amount,
+          currency: donation.currency,
+          status: donation.status,
+          campaign: donation.campaign,
+          channel: donation.channel,
+          paid_at: donation.paid_at,
+        }
+      : null,
   })
 }
 

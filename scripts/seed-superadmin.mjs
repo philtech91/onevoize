@@ -50,10 +50,21 @@ const { neon } = await import('@neondatabase/serverless');
 const sql = neon(DATABASE_URL);
 
 // ─── Superadmin credentials ──────────────────────────────────────────────────
-const NAME     = 'Demo La Blaze';
-const EMAIL    = 'demolablaze@gmail.com';
-const PASSWORD = '$Omerta93';
+const NAME     = (process.env.SUPERADMIN_NAME || 'Super Admin').trim();
+const EMAIL    = (process.env.SUPERADMIN_EMAIL || '').trim().toLowerCase();
+const PASSWORD = process.env.SUPERADMIN_PASSWORD || '';
 const ROLE     = 'superadmin';
+
+if (!EMAIL || !PASSWORD) {
+  console.error('\n❌  Missing SUPERADMIN_EMAIL or SUPERADMIN_PASSWORD in .env.local');
+  console.error('   Please set both environment variables before running this script.\n');
+  process.exit(1);
+}
+
+if (PASSWORD.length < 8) {
+  console.error('\n❌  SUPERADMIN_PASSWORD must be at least 8 characters long.\n');
+  process.exit(1);
+}
 
 // ─── Run ─────────────────────────────────────────────────────────────────────
 console.log(`\n🌱  Seeding superadmin: ${EMAIL} …`);

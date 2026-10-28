@@ -33,13 +33,36 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (user) {
         token['id'] = user.id;
         token['role'] = user.role;
+        return token;
+      }
+
+      if (token['id']) {
+        try {
+          const rows = await db<{ id: number; name: string; email: string; role: UserRole; is_active: boolean }>(
+            'SELECT id, name, email, role, is_active FROM users WHERE id = $1 LIMIT 1',
+            [Number(token['id'])],
+          );
+          const dbUser = rows[0];
+          if (!dbUser || !dbUser.is_active) {
+            delete token['id'];
+            delete token['role'];
+            return token;
+          }
+          token['role'] = dbUser.role;
+          token.name = dbUser.name;
+          token.email = dbUser.email;
+        } catch {
+          // Preserve existing token if transient DB check fails
+        }
       }
       return token;
     },
     async session({ session, token }) {
-      if (token) {
-        session.user.id = (token['id'] as string) ?? '';
+      if (token && token['id']) {
+        session.user.id = String(token['id']);
         session.user.role = (token['role'] as UserRole) ?? 'admin';
+      } else {
+        session.user.id = '';
       }
       return session;
     },

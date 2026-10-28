@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { revalidatePath } from 'next/cache';
 import { auth } from '@/lib/auth';
-import { db } from '@/lib/db';
+import { db, getClientIp } from '@/lib/db';
+import { isSafeMediaSrc } from '@/lib/gallery-server';
 
 function slugify(input: string): string {
   return input
@@ -16,7 +17,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -34,7 +35,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -69,6 +70,12 @@ export async function PATCH(
     if (!title) {
       return NextResponse.json({ error: 'Campaign title cannot be empty' }, { status: 400 });
     }
+    if (image_url && !isSafeMediaSrc(String(image_url))) {
+      return NextResponse.json(
+        { error: 'Invalid image URL. Use a relative /images/... path or https:// URL.' },
+        { status: 400 },
+      );
+    }
 
     const updated = await db(
       `UPDATE campaigns
@@ -88,12 +95,13 @@ export async function PATCH(
     );
 
     await db(
-      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details)
-       VALUES ($1, 'UPDATE_CAMPAIGN', 'campaigns', $2, $3)`,
+      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip_address)
+       VALUES ($1, 'UPDATE_CAMPAIGN', 'campaigns', $2, $3, $4)`,
       [
         Number(session.user.id) || null,
         campaignId,
         JSON.stringify({ title, slug, goal_amount, raised_amount, status }),
+        getClientIp(request),
       ],
     );
 
@@ -108,17 +116,18 @@ export async function PATCH(
     if (message.includes('unique') || message.includes('duplicate')) {
       return NextResponse.json({ error: 'A campaign with that slug already exists' }, { status: 409 });
     }
+    console.error('[PATCH /api/admin/campaigns/[id]] Error:', err);
     return NextResponse.json({ error: 'Failed to update campaign' }, { status: 500 });
   }
 }
 
 /** DELETE /api/admin/campaigns/[id] */
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
-  if (!session?.user) {
+  if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -130,9 +139,9 @@ export async function DELETE(
   }
 
   await db(
-    `INSERT INTO audit_logs (user_id, action, entity, entity_id, details)
-     VALUES ($1, 'DELETE_CAMPAIGN', 'campaigns', $2, $3)`,
-    [Number(session.user.id) || null, campaignId, JSON.stringify(deleted[0])],
+    `INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip_address)
+     VALUES ($1, 'DELETE_CAMPAIGN', 'campaigns', $2, $3, $4)`,
+    [Number(session.user.id) || null, campaignId, JSON.stringify(deleted[0]), getClientIp(request)],
   );
 
   revalidatePath('/campaigns');

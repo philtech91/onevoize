@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { revalidatePath } from 'next/cache';
 import bcrypt from 'bcryptjs';
 import { auth } from '@/lib/auth';
-import { db } from '@/lib/db';
+import { db, getClientIp } from '@/lib/db';
 
 /** GET /api/admin/users/[id] */
 export async function GET(
@@ -10,7 +10,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
-  if (!session?.user || session.user.role !== 'superadmin') {
+  if (!session?.user?.id || session.user.role !== 'superadmin') {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -31,7 +31,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
-  if (!session?.user || session.user.role !== 'superadmin') {
+  if (!session?.user?.id || session.user.role !== 'superadmin') {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -50,7 +50,7 @@ export async function PATCH(
 
     const body = await request.json();
     const name = body.name !== undefined ? String(body.name).trim() : String(existing.name);
-    const email = body.email !== undefined ? String(body.email).trim() : String(existing.email);
+    const email = body.email !== undefined ? String(body.email).trim().toLowerCase() : String(existing.email);
     const role = body.role && ['admin', 'superadmin'].includes(body.role)
       ? body.role
       : existing.role;
@@ -62,7 +62,14 @@ export async function PATCH(
 
     let passwordHash = String(existing.password);
     if (body.password && String(body.password).trim().length > 0) {
-      passwordHash = await bcrypt.hash(String(body.password).trim(), 12);
+      const nextPassword = String(body.password).trim();
+      if (nextPassword.length < 8) {
+        return NextResponse.json(
+          { error: 'Password must be at least 8 characters long' },
+          { status: 400 },
+        );
+      }
+      passwordHash = await bcrypt.hash(nextPassword, 12);
     }
 
     const updated = await db(
@@ -79,12 +86,13 @@ export async function PATCH(
     );
 
     await db(
-      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details)
-       VALUES ($1, 'UPDATE_USER', 'users', $2, $3)`,
+      `INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip_address)
+       VALUES ($1, 'UPDATE_USER', 'users', $2, $3, $4)`,
       [
         Number(session.user.id) || null,
         userId,
         JSON.stringify({ name, email, role, is_active, passwordReset: Boolean(body.password) }),
+        getClientIp(request),
       ],
     );
 
@@ -97,17 +105,18 @@ export async function PATCH(
     if (message.includes('unique') || message.includes('duplicate')) {
       return NextResponse.json({ error: 'A user with that email already exists' }, { status: 409 });
     }
+    console.error('[PATCH /api/admin/users/[id]] Error:', err);
     return NextResponse.json({ error: 'Failed to update user' }, { status: 500 });
   }
 }
 
 /** DELETE /api/admin/users/[id] */
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await auth();
-  if (!session?.user || session.user.role !== 'superadmin') {
+  if (!session?.user?.id || session.user.role !== 'superadmin') {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -123,9 +132,9 @@ export async function DELETE(
   }
 
   await db(
-    `INSERT INTO audit_logs (user_id, action, entity, entity_id, details)
-     VALUES ($1, 'DELETE_USER', 'users', $2, $3)`,
-    [Number(session.user.id) || null, userId, JSON.stringify(deleted[0])],
+    `INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip_address)
+     VALUES ($1, 'DELETE_USER', 'users', $2, $3, $4)`,
+    [Number(session.user.id) || null, userId, JSON.stringify(deleted[0]), getClientIp(request)],
   );
 
   revalidatePath('/dashboard/superadmin/users');

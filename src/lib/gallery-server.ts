@@ -1,5 +1,107 @@
+import { writeFile, mkdir } from 'node:fs/promises';
+import { join, extname } from 'node:path';
 import { db } from '@/lib/db';
 import { clubPhotos, clubVideos, type GalleryPhoto, type GalleryVideo } from '@/lib/gallery';
+
+const ALLOWED_IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif']);
+const ALLOWED_VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov']);
+const ALLOWED_IMAGE_MIMES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'image/avif',
+]);
+const ALLOWED_VIDEO_MIMES = new Set(['video/mp4', 'video/webm', 'video/quicktime']);
+
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024; // 50 MB
+const MAX_FALLBACK_DATA_URI_BYTES = 2 * 1024 * 1024; // 2 MB
+
+export class MediaValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MediaValidationError';
+  }
+}
+
+export function isSafeMediaSrc(src: string): boolean {
+  const trimmed = src.trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//') && !trimmed.startsWith('/\\')) {
+    return true;
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    return true;
+  }
+  if (/^data:image\/(jpeg|png|webp|gif|avif);base64,[a-z0-9+/=\s]+$/i.test(trimmed)) {
+    return true;
+  }
+  return false;
+}
+
+export async function saveUploadedMedia(file: File): Promise<string> {
+  const rawExt = extname(file.name).toLowerCase();
+  const mime = (file.type || '').toLowerCase();
+
+  const isVideo = ALLOWED_VIDEO_EXTENSIONS.has(rawExt) || ALLOWED_VIDEO_MIMES.has(mime);
+  const isImage = ALLOWED_IMAGE_EXTENSIONS.has(rawExt) || ALLOWED_IMAGE_MIMES.has(mime);
+
+  if (!isImage && !isVideo) {
+    throw new MediaValidationError(
+      'Unsupported file type. Allowed formats: JPG, PNG, WebP, GIF, AVIF, MP4, WebM, MOV.',
+    );
+  }
+
+  if (rawExt && !ALLOWED_IMAGE_EXTENSIONS.has(rawExt) && !ALLOWED_VIDEO_EXTENSIONS.has(rawExt)) {
+    throw new MediaValidationError(
+      'Unsupported file extension. Allowed formats: .jpg, .jpeg, .png, .webp, .gif, .avif, .mp4, .webm, .mov.',
+    );
+  }
+
+  if (mime && !ALLOWED_IMAGE_MIMES.has(mime) && !ALLOWED_VIDEO_MIMES.has(mime)) {
+    throw new MediaValidationError('Unsupported media MIME type.');
+  }
+
+  const maxBytes = isVideo ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+  if (file.size > maxBytes) {
+    throw new MediaValidationError(
+      `File exceeds maximum size limit (${isVideo ? '50 MB for video' : '10 MB for image'}).`,
+    );
+  }
+
+  const ext =
+    rawExt ||
+    (isVideo ? '.mp4' : mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : '.jpg');
+
+  const safeBase =
+    file.name
+      .replace(/\.[^/.]+$/, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '') || 'media';
+
+  const filename = `${safeBase}-${Date.now()}${ext}`;
+  const bytes = await file.arrayBuffer();
+  const buffer = Buffer.from(bytes);
+
+  try {
+    const uploadDir = join(process.cwd(), 'public', 'images', 'club');
+    await mkdir(uploadDir, { recursive: true });
+    const filePath = join(uploadDir, filename);
+    await writeFile(filePath, buffer);
+    return `/images/club/${filename}`;
+  } catch {
+    if (isVideo || file.size > MAX_FALLBACK_DATA_URI_BYTES) {
+      throw new MediaValidationError(
+        'Direct file uploads on read-only serverless storage are limited to images under 2 MB. Please provide an external media URL instead.',
+      );
+    }
+    const safeMime = ALLOWED_IMAGE_MIMES.has(mime) ? mime : 'image/jpeg';
+    return `data:${safeMime};base64,${buffer.toString('base64')}`;
+  }
+}
 
 export type GalleryItemRecord = {
   id: number;
